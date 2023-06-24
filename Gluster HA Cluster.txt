@@ -1,0 +1,421 @@
+#####################################Gluster HA Cluster Setup
+##############Configure to ALL Node
+[root@node01 ~]#vi /etc/hosts
+192.168.1.200 node01 node01.kpp.com
+192.168.1.201 node02 node02.kpp.com
+192.168.1.202 node03 node03.kpp.com
+
+[root@node01 ~]#vi /etc/selinux/config
+SELINUX=disabled
+
+[root@node01 ~]#yum install centos-release-gluster -y
+[root@node01 ~]#yum install centos-release-gluster -y
+[root@node01 ~]#yum install glusterfs-server –y
+[root@node01 ~]#systemctl start glusterd
+[root@node01 ~]#systemctl enable glusterd
+[root@node01 ~]#systemctl status glusterd
+
+
+[root@node01 ~]#fdisk -l /dev/sdb
+[root@node01 ~]#fdisk /dev/sdb
+[root@node01 ~]#mkfs.xfs /dev/sdb5
+[root@node01 ~]#mkdir /storage
+[root@node01 ~]#mount /dev/sdb5 /storage/
+[root@node01 ~]#mkdir /storage/br0
+[root@node01 ~]#df -Th
+[root@node01 ~]#vi /etc/fstab
+/dev/sdb5               /storage/               xfs     defaults        0 0
+
+[root@node01 ~]#mount -a
+
+[root@node01 ~]#firewall-cmd --zone=public --add-port=24007-24008/tcp --permanent
+[root@node01 ~]#firewall-cmd --zone=public --add-port=24009/tcp --permanent
+[root@node01 ~]#firewall-cmd --zone=public --add-service=nfs --add-service=samba --add-service=samba-client --permanent
+[root@node01 ~]#firewall-cmd --zone=public --add-port=111/tcp --add-port=139/tcp --add-port=445/tcp --add-port=965/tcp --add-port=2049/tcp --add-port=38465-38469/tcp --add-port=631/tcp --add-port=111/udp --add-port=963/udp --add-port=49152-49251/tcp --permanent
+[root@node01 ~]#firewall-cmd --reload
+[root@node01 ~]#systemctl status firewalld
+
+######Only on One Node
+[root@node01 ~]#gluster peer probe node01
+[root@node01 ~]#gluster peer probe node02
+[root@node01 ~]#gluster peer probe node03
+[root@node01 ~]#gluster peer status
+
+
+[root@node01 ~]#gluster volume create nfs0 replica 3 node01:/storage/br0/ node02:/storage/br0/ node03:/storage/br0/
+[root@node01 ~]#gluster volume start nfs0
+[root@node01 ~]#gluster volume info nfs0
+[root@node01 ~]#gluster volume set nfs0 nfs.disable off
+[root@node01 ~]#gluster volume info nfs0
+
+
+[root@node01 ~]# gluster volume create ctdb0 replica 3 node01:/ctdb/br0/ node02:/ctdb/br0/ node03:/ctdb/br0/
+
+###ALL Node
+[root@node01 ~]#yum -y install corosync pacemaker pcs
+[root@node01 ~]#systemctl enable pcsd.service
+[root@node01 ~]#systemctl start pcsd.service
+[root@node01 ~]#systemctl enable corosync.service
+[root@node01 ~]#systemctl enable pacemaker.service
+[root@node01 ~]#passwd hacluster
+
+######Only on One Node
+[root@node01 ~]#pcs cluster auth node01 node02 node03
+[root@node01 ~]#pcs cluster setup --name NFS-Gluster node01 node02 node03
+[root@node01 ~]#pcs cluster start --all
+[root@node01 ~]#pcs property set no-quorum-policy=ignore
+[root@node01 ~]#pcs property set stonith-enabled=false
+[root@node01 ~]#pcs resource create virtual_ip ocf:heartbeat:IPaddr2 ip=192.168.1.203 cidr_netmask=24 op monitor interval=20s
+[root@node01 ~]#pcs status
+
+
+######Status Check
+[root@node01 ~]#gluster peer status
+[root@node01 ~]#gluster pool list
+[root@node01 ~]#gluster vol info
+[root@node01 ~]#gluster volume profile nfs0 start
+[root@node01 ~]#gluster volume profile nfs0 info
+[root@node01 ~]#gluster volume status
+[root@node01 ~]#gluster volume heal nfs0 info
+
+
+[root@node01 ~]#gluster detach node02
+#####################Distributed Volume
+[root@node01 ~]# gluster volume create distribute0 node01:/dvstorage/brick1 node02:/dvstorage/brick1 node03:/dvstorage/brick1
+[root@node01 ~]#gluster volume start distribute0
+[root@node01 ~]#gluster volume info distribute0
+[root@node01 ~]# gluster volume status distribute0
+
+#####################Use quotas
+[root@node01 ~]# gluster volume quota  nfs0 list
+[root@node01 ~]# gluster volume quota  nfs0 enable
+[root@node01 ~]# gluster volume quota  nfs0 list
+[root@node01 ~]# gluster volume quota  nfs0 limit-usage / 20MB
+[root@client ~]# mkdir /gluster/ha/data1 /gluster/ha/data2
+[root@node01 ~]# gluster volume quota nfs0 limit-usage /data1 5MB
+[root@node01 ~]# gluster volume quota nfs0 limit-usage /data2 15MB
+[root@client ~]# dd if=/dev/urandom of=myfile3 bs=1MB count=1
+[root@node01 ~]# gluster volume quota nfs0 list
+                  Path                   Hard-limit  Soft-limit      Used  Available  Soft-limit exceeded? Hard-limit exceeded?
+-------------------------------------------------------------------------------------------------------------------------------
+/                                         20.0MB     80%(16.0MB)    5.7MB  14.3MB              No                   No
+/data1                                     5.0MB     80%(4.0MB)     5.7MB  0Bytes             Yes                  Yes
+/data2                                    15.0MB     80%(12.0MB)    0Bytes  15.0MB             No                   No
+[root@node01 ~]# gluster volume quota nfs0 disable
+
+#####################Extend or Shrink a Gluster
+Extend
+[root@node01 ~]# gluster volume create distribute0 node01:/dvstorage/brick1
+[root@node01 ~]# gluster volume add-brick distribute0 node02:/dvstorage/brick1 (ADD Brick)
+[root@node01 ~]# gluster volume rebalance distribute0 start
+[root@node01 ~]# gluster volume rebalance distribute0 status
+
+Shrink
+[root@node01 ~]# gluster volume remove-brick distribute0 node03:/dvstorage/brick1 start
+[root@node01 ~]# gluster volume remove-brick distribute0 node03:/dvstorage/brick1 commit (Remove from volume list)
+[root@node01 ~]# gluster volume info
+
+ReAdd
+volume add-brick: failed: Pre Validation failed on node03. /dvstorage/brick1 is already part of a volume
+[root@node03 ~]# setfattr -x trusted.glusterfs.volume-id /dvstorage/brick1
+[root@node03 ~]# setfattr -x trusted.gfid /dvstorage/brick1
+[root@node01 ~]# gluster volume add-brick distribute0 node02:/dvstorage/brick1
+
+#####################Restricting client connections
+[root@node01 ~]# gluster volume get distribute0 auth.allow
+[root@node01 ~]# gluster volume get distribute0 auth.reject
+[root@node01 ~]# gluster volume set distribute0 auth.reject 192.168.1.12
+[root@node01 ~]# gluster volume reset distribute0 auth.reject
+
+
+#####################Heketi REST API
+
+export HEKETI_CLI_USER=admin
+export HEKETI_CLI_KEY=123456
+
+
+Create Cluster
+Add Node
+Add Devices
+Create Volumes
+Test redundancy
+
+
+
+
+
+[root@node01 ~]# heketi-cli cluster create
+
+[root@node01 ~]# heketi-cli cluster list
+Clusters:
+Id:9b7e5ec2a401b303ada5e4c20a2bfa32 [file][block]
+
+[root@node01 ~]# heketi-cli cluster info 9b7e5ec2a401b303ada5e4c20a2bfa32
+Cluster id: 9b7e5ec2a401b303ada5e4c20a2bfa32
+Nodes:
+
+Volumes:
+
+Block: true
+
+File: true
+
+
+[root@node01 ~]# heketi-cli node add --zone=1 --cluster=9b7e5ec2a401b303ada5e4c20a2bfa32 --management-host-name=node01 --storage-host-name=node01
+
+[root@node01 ~]# heketi-cli node add --zone=1 --cluster=9b7e5ec2a401b303ada5e4c20a2bfa32 --management-host-name=node02 --storage-host-name=node02
+
+[root@node01 ~]# heketi-cli node add --zone=1 --cluster=9b7e5ec2a401b303ada5e4c20a2bfa32 --management-host-name=node03 --storage-host-name=node03
+
+[root@node01 ~]# heketi-cli cluster list
+Clusters:
+Id:9b7e5ec2a401b303ada5e4c20a2bfa32 [file][block]
+
+[root@node01 ~]# heketi-cli cluster info 9b7e5ec2a401b303ada5e4c20a2bfa32
+Cluster id: 9b7e5ec2a401b303ada5e4c20a2bfa32
+Nodes:
+4945968037074b288cac796c2fcaa1f3
+65dd0470fc7c4f848bdc2c12b61ab4aa
+c2ca0676ba739531161c47e4ed3f7859
+Volumes:
+
+Block: true
+
+File: true
+
+[root@node01 ~]# heketi-cli device add --name /dev/sde --node 4945968037074b288cac796c2fcaa1f3
+[root@node01 ~]# heketi-cli device add --name /dev/sde --node 65dd0470fc7c4f848bdc2c12b61ab4aa
+[root@node01 ~]# heketi-cli device add --name /dev/sde --node c2ca0676ba739531161c47e4ed3f7859
+[root@node01 ~]# heketi-cli node info 65dd0470fc7c4f848bdc2c12b61ab4aa
+[root@node01 ~]# 
+[root@node01 ~]# heketi-cli volume create --size=1 --replica=3
+[root@node01 ~]# heketi-cli volume list
+[root@node01 ~]# heketi-cli cluster info 9b7e5ec2a401b303ada5e4c20a2bfa32
+[root@node01 ~]# heketi-cli volume list
+[root@node01 ~]# heketi-cli volume info 9bc176a0a641bdbd3155b0dbc6a58aad
+[root@node01 ~]# heketi-cli topology info
+[root@node01 ~]# ll /gluster/
+[root@node01 ~]# mkdir /gluster/heketi
+[root@node01 ~]# mount -t glusterfs -o backup-volfile-servers=node01,node02 node03:vol_9bc176a0a641bdbd3155b0dbc6a58aad /gluster/heketi/
+[root@node01 ~]# mount -t glusterfs -o backup-volfile-servers=node01 node03:vol_9bc176a0a641bdbd3155b0dbc6a58aad /gluster/heketi/
+[root@node01 ~]# gluster pool list
+[root@node01 ~]# mount -t glusterfs -o backup-volfile-servers=node01 node03:vol_9bc176a0a641bdbd3155b0dbc6a58aad /gluster/heketi/
+
+
+
+
+
+
+
+
+
+
+################################################################################################################################################################
+##########################################RH236
+
+
+The rh-gluster-3-nfs-* repositories are only needed if NFS-Ganesha support is required.
+
+rh-gluster-3-samba repositories should be selected to provide Samba or CTDB
+support.
+
+rhgs-random-io, for numerous small reads and writes, and 
+rhgssequential-io, for larger file transfers. Both are based on the throughput-performance profile.
+
+################################Creating Bricks
+A brick is an XFS file
+system (with 512-byte inodes) mounted on one of the storage servers.
+################Create a 10 GiB LVM thin pool
+[root@node01 ~]# lvcreate -L 10G -T vg_bricks/thinpool
+[root@node02 ~]# lvcreate -L 10G -T vg_bricks/thinpool
+[root@node01 ~]# lvdisplay
+
+################Create a logical volume with a virtual size of 2 GiB
+[root@node01 ~]# lvcreate -V 2G -T vg_bricks/thinpool -n brick-a1
+[root@node02 ~]# lvcreate -V 2G -T vg_bricks/thinpool -n brick-b1
+
+################Create an XFS file system with an inode size of 512 bytes
+[root@node01 ~]# mkfs -t xfs -i size=512 /dev/vg_bricks/brick-a1
+[root@node02 ~]# mkfs -t xfs -i size=512 /dev/vg_bricks/brick-b1
+
+################Create the directories
+[root@node01 ~]# mkdir -p /bricks/brick-a1
+[root@node02 ~]# mkdir -p /bricks/brick-b1
+
+
+[root@node01 ~]# vi /etc/fstab
+/dev/vg_bricks/brick-a1 /bricks/brick-a1 xfs defaults 1 2
+[root@node02 ~]# vi /etc/fstab
+/dev/vg_bricks/brick-b1 /bricks/brick-b1 xfs defaults 1 2
+
+################################Configuring a Trusted Storage Pool
+[root@node01 ~]#gluster peer probe node02
+[root@node01 ~]#gluster peer status
+[root@node01 ~]#gluster pool list
+[root@node01 ~]#gluster peer detach node02
+/var/log/glusterfs/etc-glusterfs-glusterd.vol.log
+
+################Create a /brick subdirectory on the new brick
+[root@node01 ~]# mkdir /bricks/brick-a1/brick
+[root@node02 ~]# mkdir /bricks/brick-b1/brick
+
+################Configure the default SELinux label for the brick directory
+[root@node01 ~]# semanage fcontext -a -t glusterd_brick_t /bricks/brick-a1/brick
+[root@node02 ~]# semanage fcontext -a -t glusterd_brick_t /bricks/brick-a1/brick
+
+[root@node01 ~]# restorecon -Rv /bricks
+[root@node02 ~]# restorecon -Rv /bricks
+
+
+
+
+################################Creating Volumes
+################Create a new gluster volume called firstvol
+[root@node01 ~]# gluster volume create firstvol node01:/bricks/brick-a1/brick node02:/bricks/brick-b1/brick
+[root@node01 ~]# gluster volume info firstvol
+[root@node01 ~]# gluster volume start firstvol
+[root@node01 ~]# gluster volume info firstvol
+[root@node01 ~]#
+[root@node01 ~]#
+[root@node01 ~]#
+[root@node01 ~]#
+
+
+
+
+################Testing Volumes
+[root@client ~]# yum install glusterfs-fuse
+[root@client ~]# mount -t glusterfs servera:firstvol /mnt
+[root@client ~]#touch /mnt/file{0..0100}
+[root@client ~]#
+[root@client ~]#
+
+
+
+################################Creating Different Volume Types
+1. Distributed: Distributed volumes are useful when total storage space is more important than availability.
+[root@node01 ~]# gluster volume create distributedvolume node01:/bricks/brick-a1/brick node02:/bricks/brick-b1/brick
+
+2. Replicated: Bricks are mirrored to each other.Replicated volumes offer redundancy and high availability, but at the cost of reduced storage
+capacity.
+[root@node01 ~]# gluster volume create replicavolume replica 2 node01:/bricks/brick-a1/brick node02:/bricks/brick-b1/brick
+
+3. Dispersed: Dispersed volumes are based on Erasure Coding (EC).
+Dispersed volumes need N amount of bricks, where N is the minimum number of data bricks to read a file (K) plus the number of bricks that are allowed to fail (M). This gives the equation: N = K + M.
+
+[root@node01 ~]# gluster volume create dispersevol disperse-data 4 redundancy 2  brick1 brick2 brick3 brick4 brick5 brick6
+
+################Combined Volume Types
+1. Distributed-Replicated: number of replicated sets is formed equal to the number of bricks in the volume divided by the replica count. Files are then distributed across these replicated sets.
+
+[root@node01 ~]# gluster volume create distreplvol replica 2 \
+> node01:/bricks/brick-a3/brick \
+> node02:/bricks/brick-b3/brick \
+> node03:/bricks/brick-c3/brick \
+> node04:/bricks/brick-d3/brick
+
+2. Distributed-Dispersed: a number of dispersed sets is formed equal to the number of bricks in the volume divided by the (disperse-data + redundancy) count.
+
+[root@node01 ~]# gluster volume create distdispvol \
+> disperse-data 4 redundancy 2 $(</tmp/distdispbricks) force
+
+################################Installing Client
+################Installing the Native Client
+[root@node01 ~]# yum update glusterfs glusterfs-fuse
+[root@workstation ~]# mkdir /mnt/custdata
+servera:/custdata /mnt/custdata glusterfs _netdev,backup-volfileservers=serverb:serverc:serverd 0 0
+[root@workstation ~]# mount /mnt/custdata
+[root@workstation ~]# tail /var/log/glusterfs/mnt-custdata.log
+
+################Mounting Volumes Using NFS Clients
+Unlike the native client, clients using NFSv3 will not automatically fail over to using another
+server when the server they are connected to becomes unavailable
+
+
+
+################Mounting Volumes Using CIFS Exports
+
+
+
+
+
+
+
+
+################################
+################Extented Volumes
+[root@node01 ~]# gluster volume add-brick extendme node01:/storage/brick-n1/brick7/ node02:/storage/brick-n2/brick7/ node03:/storage/brick-n2/brick7/
+[root@node01 ~]# gluster volume info extendme
+Volume Name: extendme
+Type: Distributed-Replicate
+Volume ID: 1253113e-fec9-4a31-944f-af65de78fced
+Status: Started
+Snapshot Count: 0
+Number of Bricks: 2 x 3 = 6
+Transport-type: tcp
+Bricks:
+Brick1: node01:/storage/brick-n1/brick6
+Brick2: node02:/storage/brick-n2/brick6
+Brick3: node03:/storage/brick-n3/brick6
+Brick4: node01:/storage/brick-n1/brick7
+Brick5: node02:/storage/brick-n2/brick7
+Brick6: node03:/storage/brick-n3/brick7
+Options Reconfigured:
+cluster.granular-entry-heal: on
+storage.fips-mode-rchecksum: on
+transport.address-family: inet
+nfs.disable: on
+performance.client-io-threads: off
+
+[root@node01 ~]# gluster volume rebalance extendme start
+[root@node01 ~]# gluster volume rebalance extendme status
+[root@workstation ~]# cat /etc/fstab
+nodefs:extendme         /mnt/extendme           glusterfs _netdev,backup-volfile-servers=node02:node03 0 0
+
+################Shrinking Volumes
+[root@node01 ~]# gluster volume create demovol replica 3 node01:/storage/brick-n1/brick8/ node02:/storage/brick-n2/brick8/ node03:/storage/brick-n3/brick8/
+[root@node01 ~]# gluster volume start demovol
+[root@node01 ~]# gluster volume info demovol
+[root@node01 ~]# gluster volume add-volume demovol node01:/storage/brick-n1/brick9 node02:/storage/brick-n2/brick9 node03:/storage/brick-n3/brick9
+[root@node01 ~]# gluster volume rebalance demovol start
+
+[root@node01 ~]# gluster volume remove-brick demovol node01:/storage/brick-n1/brick9 node02:/storage/brick-n2/brick9 node03:/storage/brick-n3/brick9 start
+[root@node01 ~]# gluster volume remove-brick demovol node01:/storage/brick-n1/brick9 node02:/storage/brick-n2/brick9 node03:/storage/brick-n3/brick9 status
+[root@node01 ~]# gluster volume remove-brick demovol node01:/storage/brick-n1/brick9 node02:/storage/brick-n2/brick9 node03:/storage/brick-n3/brick9 commit
+
+
+################################
+CONFIGURING IP FAILOVER
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Resources:
+1. https://github.com/vfxpipeline/glusterfs
+2. https://jamesnbr.wordpress.com/2017/01/26/glusterfs-and-nfs-with-high-availability-on-centos-7/
+3. https://oracle.github.io/linux-labs/HA-NFS/
+
+
+
+
+
+
+
+

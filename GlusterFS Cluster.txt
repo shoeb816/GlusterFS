@@ -1,0 +1,228 @@
+The rh-gluster-3-nfs-* repositories are only needed if NFS-Ganesha support is required.
+
+rh-gluster-3-samba repositories should be selected to provide Samba or CTDB
+support.
+
+rhgs-random-io, for numerous small reads and writes, and 
+rhgssequential-io, for larger file transfers. Both are based on the throughput-performance profile.
+
+################################Creating Bricks
+A brick is an XFS file
+system (with 512-byte inodes) mounted on one of the storage servers.
+################Create a 10 GiB LVM thin pool
+[root@node01 ~]# lvcreate -L 10G -T vg_bricks/thinpool
+[root@node02 ~]# lvcreate -L 10G -T vg_bricks/thinpool
+[root@node01 ~]# lvdisplay
+
+################Create a logical volume with a virtual size of 2 GiB
+[root@node01 ~]# lvcreate -V 2G -T vg_bricks/thinpool -n brick-a1
+[root@node02 ~]# lvcreate -V 2G -T vg_bricks/thinpool -n brick-b1
+
+################Create an XFS file system with an inode size of 512 bytes
+[root@node01 ~]# mkfs -t xfs -i size=512 /dev/vg_bricks/brick-a1
+[root@node02 ~]# mkfs -t xfs -i size=512 /dev/vg_bricks/brick-b1
+
+################Create the directories
+[root@node01 ~]# mkdir -p /bricks/brick-a1
+[root@node02 ~]# mkdir -p /bricks/brick-b1
+
+
+[root@node01 ~]# vi /etc/fstab
+/dev/vg_bricks/brick-a1 /bricks/brick-a1 xfs defaults 1 2
+[root@node02 ~]# vi /etc/fstab
+/dev/vg_bricks/brick-b1 /bricks/brick-b1 xfs defaults 1 2
+
+################################Configuring a Trusted Storage Pool
+[root@node01 ~]#gluster peer probe node02
+[root@node01 ~]#gluster peer status
+[root@node01 ~]#gluster pool list
+[root@node01 ~]#gluster peer detach node02
+/var/log/glusterfs/etc-glusterfs-glusterd.vol.log
+
+################Create a /brick subdirectory on the new brick
+[root@node01 ~]# mkdir /bricks/brick-a1/brick
+[root@node02 ~]# mkdir /bricks/brick-b1/brick
+
+################Configure the default SELinux label for the brick directory
+[root@node01 ~]# semanage fcontext -a -t glusterd_brick_t /bricks/brick-a1/brick
+[root@node02 ~]# semanage fcontext -a -t glusterd_brick_t /bricks/brick-a1/brick
+
+[root@node01 ~]# restorecon -Rv /bricks
+[root@node02 ~]# restorecon -Rv /bricks
+
+
+
+
+################################Creating Volumes
+################Create a new gluster volume called firstvol
+[root@node01 ~]# gluster volume create firstvol node01:/bricks/brick-a1/brick node02:/bricks/brick-b1/brick
+[root@node01 ~]# gluster volume info firstvol
+[root@node01 ~]# gluster volume start firstvol
+[root@node01 ~]# gluster volume info firstvol
+[root@node01 ~]#
+[root@node01 ~]#
+[root@node01 ~]#
+[root@node01 ~]#
+
+
+
+
+################Testing Volumes
+[root@client ~]# yum install glusterfs-fuse
+[root@client ~]# mount -t glusterfs servera:firstvol /mnt
+[root@client ~]#touch /mnt/file{0..0100}
+[root@client ~]#
+[root@client ~]#
+
+
+
+################################Creating Different Volume Types
+1. Distributed: Distributed volumes are useful when total storage space is more important than availability.
+[root@node01 ~]# gluster volume create distributedvolume node01:/bricks/brick-a1/brick node02:/bricks/brick-b1/brick
+
+2. Replicated: Bricks are mirrored to each other.Replicated volumes offer redundancy and high availability, but at the cost of reduced storage
+capacity.
+[root@node01 ~]# gluster volume create replicavolume replica 2 node01:/bricks/brick-a1/brick node02:/bricks/brick-b1/brick
+
+3. Dispersed: Dispersed volumes are based on Erasure Coding (EC).
+Dispersed volumes need N amount of bricks, where N is the minimum number of data bricks to read a file (K) plus the number of bricks that are allowed to fail (M). This gives the equation: N = K + M.
+
+[root@node01 ~]# gluster volume create dispersevol disperse-data 4 redundancy 2  brick1 brick2 brick3 brick4 brick5 brick6
+
+################Combined Volume Types
+1. Distributed-Replicated: number of replicated sets is formed equal to the number of bricks in the volume divided by the replica count. Files are then distributed across these replicated sets.
+
+[root@node01 ~]# gluster volume create distreplvol replica 2 \
+> node01:/bricks/brick-a3/brick \
+> node02:/bricks/brick-b3/brick \
+> node03:/bricks/brick-c3/brick \
+> node04:/bricks/brick-d3/brick
+
+2. Distributed-Dispersed: a number of dispersed sets is formed equal to the number of bricks in the volume divided by the (disperse-data + redundancy) count.
+
+[root@node01 ~]# gluster volume create distdispvol \
+> disperse-data 4 redundancy 2 $(</tmp/distdispbricks) force
+
+
+
+setfattr -x trusted.glusterfs.volume-id /storage/brick-n1/brick/
+setfattr -x trusted.gfid /storage/brick-n1/brick/
+rm -rf /storage/brick-n1/brick/.glusterfs
+
+################################Installing Client
+################Installing the Native Client
+[root@node01 ~]# yum update glusterfs glusterfs-fuse
+[root@workstation ~]# mkdir /mnt/nfs-rep
+nodefs:/nfs-rep /mnt/nfs-rep glusterfs _netdev,backup-volfileservers=node02:node03 0 0
+[root@workstation ~]# mount /mnt/nfs-rep
+[root@workstation ~]# tail /var/log/glusterfs/mnt-custdata.log
+
+################Mounting Volumes Using NFS Clients
+Unlike the native client, clients using NFSv3 will not automatically fail over to using another server when the server they are connected to becomes unavailable
+
+
+
+################Mounting Volumes Using CIFS Exports
+
+
+
+
+
+
+
+
+
+
+################################Configuring ACLs and Quotas
+################Setting POSIX ACLs
+[root@node01 ~]# gluster volume create groupdata replica 3 node01:/storage/brick-n1/brick4 node02:/storage/brick-n2/brick4 node03:/storage/brick-n3/brick4
+[root@node01 ~]# gluster v start groupdata
+
+[root@workstation ~]# cat /etc/fstab
+nodefs:groupdata        /mnt/groupdata          glusterfs _netdev,acl,backup-volfile-servers=node01:node03 0 0
+
+[root@workstation ~]# useradd dave -g admins
+[root@workstation ~]# useradd boss -g managers
+[root@workstation ~]# useradd simon -g admins -G managers
+[root@workstation ~]# chgrp admins /mnt/groupdata/admindocs
+[root@workstation ~]# chmod 2770 /mnt/groupdata/admindocs
+[root@workstation ~]# setfacl -R -m g:admins:rwX /mnt/groupdata/admindocs/
+[root@workstation ~]# setfacl -R -m d:g:admins:rwX /mnt/groupdata/admindocs
+[root@workstation ~]# setfacl -R -m g:managers:rX /mnt/groupdata/admindocs
+[root@workstation ~]# setfacl -R -m d:g:managers:rX /mnt/groupdata/admindocs
+
+################Setting Quotas
+[root@node01 ~]# gluster volume create graphics replica 3 node01:/storage/brick-n1/brick5 node02:/storage/brick-n2/brick5 node03:/storage/brick-n3/brick5
+[root@node01 ~]# gluster v start graphics
+[root@node01 ~]# gluster volume quota graphics enable
+[root@node01 ~]# gluster volume quota graphics limit-usage /raw 1GB 50%
+[root@node01 ~]# gluster volume quota graphics soft-timeout 5s
+[root@node01 ~]# gluster volume quota graphics hard-timeout 1s
+[root@node01 ~]# gluster volume set graphics quota-deem-statfs on
+
+[root@workstation ~]# cat /etc/fstab
+nodefs:graphics         /mnt/graphics           glusterfs _netdev,backup-volfile-servers=node01:node02 0 0
+[root@workstation ~]# umount /mnt/graphics
+[root@workstation ~]# mkdir /mnt/graphics/raw
+[root@workstation ~]# mount /mnt/graphics
+[root@workstation ~]# df -Th /mnt/graphics/raw/
+Filesystem      Type            Size  Used Avail Use% Mounted on
+nodefs:graphics fuse.glusterfs  1.0G     0  1.0G   0% /mnt/graphics
+[root@workstation ~]# dd if=/dev/zero of=/mnt/graphics/raw/testfile bs=1M
+dd: error writing ‘/mnt/graphics/raw/testfile’: Disk quota exceeded
+[root@workstation ~]# ls -lh /mnt/graphics/raw/
+total 1.1G
+
+
+
+
+ 626  gluster volume create graphics replica 3 node01:/storage/brick-n1/brick5 node02:/storage/brick-n2/brick5 node03:/storage/brick-n3/brick5
+  627  gluster v start graphics
+  628  gluster volume quota graphics enable
+  629  gluster volume quota graphics limit-usage /raw 1GB 50%
+  630  gluster volume quota graphics soft-timeout 5s
+  631  gluster volume quota graphics hard-timeout 1s
+  632  gluster volume set graphics quota-deem-statfs on
+  633  gluster volume create extendme replica 3 node01:/storage/brick-n1/brick6 node02:/storage/brick-n2/brick6 node03:/storage/brick-n3/brick6
+  634  gluster v start extendme
+  635  gluster volume info extendme
+  636  gluster v delete extendme
+  637  gluster v stop extendme
+  638  gluster v delete extendme
+  639  gluster volume create extendme distreplvol 3 node01:/storage/brick-n1/brick6 node02:/storage/brick-n2/brick6 node03:/storage/brick-n3/brick6
+  640  gluster volume create extendme replica 3 node01:/storage/brick-n1/brick6 node02:/storage/brick-n2/brick6 node03:/storage/brick-n3/brick6
+  641  setfattr -x trusted.glusterfs.volume-id /storage/brick-n1/brick6
+  642  setfattr -x trusted.gfid /storage/brick-n1/brick6
+  643  rm -rf /storage/brick-n1/brick/.glusterfs
+  644  rm -rf /storage/brick-n1/brick6/.glusterfs
+  645  clear
+  646  gluster volume create extendme replica 3 node01:/storage/brick-n1/brick6 node02:/storage/brick-n2/brick6 node03:/storage/brick-n3/brick6
+  647  gluster volume start extendme
+  648  gluster volume create distreplvol replica 2 node01:/storage/brick-n1/brick7 node02:/storage/brick-n2/brick7
+  649  gluster v status
+  650  gluster v info
+  651  setfattr -x trusted.glusterfs.volume-id /storage/brick-n1/brick7
+  652  setfattr -x trusted.gfid /storage/brick-n1/brick7
+  653  gluster v delete distreplvol
+  654  setfattr -x trusted.gfid /storage/brick-n1/brick7
+  655  gluster volume add-brick extendme node01:/storage/brick-n1/brick7 node02:/storage/brick-n2/brick7 node03:/storage/brick-n3/brick7
+  656  rm -rf /storage/brick-n1/brick7/.glusterfs
+  657  gluster volume add-brick extendme node01:/storage/brick-n1/brick7 node02:/storage/brick-n2/brick7 node03:/storage/brick-n3/brick7
+  658  rm -rf /storage/brick-n1/brick7/
+  659  gluster volume add-brick extendme node01:/storage/brick-n1/brick7 node02:/storage/brick-n2/brick7 node03:/storage/brick-n3/brick7
+  660  gluster volume info extendme
+  661  setfattr -x trusted.gfid /storage/brick-n1/brick7
+  662  setfattr -x trusted.glusterfs.volume-id /storage/brick-n1/brick7
+  663  rm -rf /storage/brick-n1/brick7/.glusterfs
+  664  gluster volume info extendme
+  665  gluster volume add-brick extendme node01:/storage/brick-n1/brick7 node02:/storage/brick-n2/brick7 node03:/storage/brick-n3/brick7
+  666  gluster volume info extendme
+  667  gluster volume rebalance extendme start
+  668  gluster volume rebalance extendme status
+  669  gluster volume remove-brick node01:/storage/brick-n1/brick7 node02:/storage/brick-n2/brick7 node03:/storage/brick-n3/brick7
+  670  gluster volume remove-brick extendme node01:/storage/brick-n1/brick7 node02:/storage/brick-n2/brick7 node03:/storage/brick-n3/brick7
+  671  gluster volume remove-brick extendme node01:/storage/brick-n1/brick7 node02:/storage/brick-n2/brick7 node03:/storage/brick-n3/brick7 start
+  672  gluster volume remove-brick extendme node01:/storage/brick-n1/brick7 node02:/storage/brick-n2/brick7 node03:/storage/brick-n3/brick7 status
+  673  gluster volume remove-brick extendme node01:/storage/brick-n1/brick7 node02:/storage/brick-n2/brick7 node03:/storage/brick-n3/brick7 commit
+
+
